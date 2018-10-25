@@ -1,0 +1,4 @@
+# dev files
+.vscode/
+var/
+index.php
