@@ -462,12 +462,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     const renderLine = (line, traceLevel = null) => wire(line)`
         <tr id=${`line-${line.num}`} class=${`line ${line.level} ${traceLevel ? 'trace' : ''}`}>
             <td class="mono number">${line.num}</td>
-            ${log.has_stamps && wire(line)`
+            ${[].concat(log.has_stamps ? `
                 <td class="mono stamp">${line.stamp}</td>
-            ` || ''}
-            ${log.has_levels && wire(line)`
+            ` : [])}
+            ${[].concat(log.has_levels ? `
                 <td class="mono level">${line.level}</td>
-            ` || ''}
+            ` : [])}
             <td
                 class=${`mono line-text ${
                     (line.trace.length > 0 ? 'has-trace' : '') +
@@ -481,7 +481,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }}
             >${line.text}</td>
         </tr>
-        ${line.expanded && line.trace.map(l => renderLine(l, traceLevel + 1)) || ''}
+        ${[].concat(line.expanded ? line.trace.map(l => renderLine(l, traceLevel + 1)) : [])}
     `;
     // render log lines
     const renderLog = () => {
@@ -559,7 +559,7 @@ main {
     width: 100%;
 }
 .line {
-    /* animation: fade-in 1s; */
+    animation: fade-in 0.5s;
 }
 .line.trace {
     background: #262e3a;
