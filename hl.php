@@ -7,16 +7,16 @@
  * @author Alex Matheson <alex@matho.me>
  */
 
-/** ===============
- *   CONFIGURATION
- *  =============== */
+/** ===============================================================================================
+ *                                           CONFIGURATION
+ *  =============================================================================================== */
 
 /**
  * Log mode
  *
- * Determines how to parse and interpolate log files.
+ * Determines how to parse and interpolate log files, if not already specified in $log_mode_map
  *
- * Supported: 'plaintext', 'laravel', 'phplog'
+ * Currently supported: 'plaintext', 'laravel', 'phplog'
  *
  * @var string
  */
@@ -54,7 +54,7 @@ $default_num_lines = 120;
  *
  * @var int
  */
-$dir_poll_rate = 1000;
+$dir_poll_rate = 10000;
 
 /**
  * Log poll rate
@@ -87,162 +87,117 @@ $log_mode_map = [
 ];
 
 /**
- * Processes plaintext files
+ * Log processors
  *
- * @param array $in_lines [[line_no => line_text]]
- * @return array
+ * Determines how to interpret lines for different types of logs.
+ *
+ * $in_lines is the output of `get_lines` and is an associate array of line number to line content.
+ * Line numbers are seqential, but will rarely start at 0.
+ * [
+ *      47 => 'The quick brown fox jumps over the lazy dog',
+ *      48 => '[25-Oct-2018 13:00:39 UTC] PHP 1. {main}()'
+ * ]
+ *
+ * The purpose of these processors is to interpret the input above and produce a structure that has
+ * well-defined timestamps, levels and stacktraces. The required output structure is:
+ * [
+ *     'lines' => [
+ *          47 => [
+ *              'num' => line number (int),
+ *              'text' => line content (string),
+ *              'stamp' => time stamp (string),
+ *              'level' => log level (string),
+ *              'trace' => array of lines to be nested under this (array),
+ *          ],
+ *          48 => [
+ *              ...
+ *          ]
+ *     ],
+ *     'has_levels' => whether to display the levels column (boolean),
+ *     'has_stamps' => whether to display the stamps column (boolean)
+ * ]
+ *
+ * Closures could also be anonymously defined in the $log_mode_map above.
  */
-function plaintext(array $in_lines)
-{
-    // disable showing levels
-    global $has_levels;
-    $has_levels = false;
 
+/**
+ * Process plaintext files
+ */
+function plaintext(array $in_lines): array
+{
     $lines = [];
     foreach ($in_lines as $num => $line) {
-        $lines[$num] = [
-            'line_no' => $num,
-            'text' => $line,
-            'stamp' => '',
-            'trace' => [],
-            'level' => 'info'
-        ];
+        $lines[$num] = line($num, $line);
     }
-
     return ['lines' => $lines, 'has_levels' => false, 'has_stamps' => false];
 }
 
 /**
- * Processes laravel-style logs
- *
- * @param array $in_lines [[line_no => line_text]]
- * @return array
+ * Process laravel-style logs
  */
-function laravel(array $in_lines)
+function laravel(array $in_lines): array
 {
-    // enable showing levels
-    global $has_levels;
-    $has_levels = true;
-
     $regex = "/^\[(.+?)\] .+?\.([A-Z]+): (.*)/";
-
     $i = min(array_keys($in_lines));
     $lines = [];
-
     while (key_exists($i, $in_lines)) {
         $line = $in_lines[$i];
         $matches = [];
         if (preg_match($regex, $line, $matches)) {
             [$_, $stamp, $level, $line] = $matches;
-            $lines[$i] = [
-                'line_no' => $i,
-                'text' => $line,
-                'stamp' => $stamp,
-                'trace' => [],
-                'level' => strtolower($level),
-                'expanded' => false
-            ];
+            $lines[$i] = line($i, $line, $stamp, $level);
             $trace_start = $i;
             while (key_exists(++$i, $in_lines) &&
                     !preg_match($regex, $in_lines[$i])) {
-                $line = $in_lines[$i];
-                $lines[$trace_start]['trace'][] = [
-                    'line_no' => $i,
-                    'text' => $line,
-                    'stamp' => $stamp,
-                    'trace' => [],
-                    'level' => strtolower($level)
-                ];
+                $lines[$trace_start]['trace'][] = line($i, $in_lines[$i], $stamp);
             }
         } else {
-            // unknown line
-            $lines[$i] = [
-                'line_no' => $i,
-                'text' => $line,
-                'stamp' => '',
-                'trace' => [],
-                'level' => ''
-            ];
-            $i++;
+            $lines[$i++] = line($i, $line);
         }
     }
-
     return ['lines' => $lines, 'has_levels' => true, 'has_stamps' => true];
 }
 
 /**
- * Processes php logs
- *
- * @param array $in_lines [[line_no => line_text]]
- * @return array
+ * Process php logs
  */
-function phplog(array $in_lines)
+function phplog(array $in_lines): array
 {
-    // enable showing levels
-    global $has_levels;
-    $has_levels = true;
-
     $error_regex = "/^\[(.+?)\] PHP (.+?): (.*)/";
     $normal_regex = "/^\[(.+?)\] PHP (.*)/";
-
     $i = min(array_keys($in_lines));
     $lines = [];
-
     while (key_exists($i, $in_lines)) {
         $line = $in_lines[$i];
         $matches = [];
         if (preg_match($error_regex, $line, $matches)) {
             [$_, $stamp, $level, $line] = $matches;
-            $lines[$i] = [
-                'line_no' => $i,
-                'text' => $line,
-                'stamp' => $stamp,
-                'trace' => [],
-                'level' => strtolower($level),
-                'expanded' => false
-            ];
+            $lines[$i] = line($i, $line, $stamp, $level);
             $trace_start = $i;
             while (key_exists(++$i, $in_lines) &&
                     !preg_match($error_regex, $in_lines[$i])) {
                 $line = $in_lines[$i];
-                $lines[$trace_start]['trace'][] = [
-                    'line_no' => $i,
-                    'text' => $line,
-                    'stamp' => $stamp,
-                    'trace' => [],
-                    'level' => strtolower($level)
-                ];
+                if (preg_match($normal_regex, $line, $matches)) {
+                    [$_, $stamp, $line] = $matches;
+                    $lines[$trace_start]['trace'][] = line($i, $line, $stamp);
+                } else {
+                    $lines[$trace_start]['trace'][] = line($i, $line, $stamp);
+                }
             }
         } elseif (preg_match($normal_regex, $line, $matches)) {
             [$_, $stamp, $line] = $matches;
-            // unknown line
-            $lines[$i] = [
-                'line_no' => $i,
-                'text' => $line,
-                'stamp' => $stamp,
-                'trace' => [],
-                'level' => ''
-            ];
-            $i++;
+            // non-error
+            $lines[$i++] = line($i, $line, $stamp);
         } else {
-            // unknown line
-            $lines[$i] = [
-                'line_no' => $i,
-                'text' => $line,
-                'stamp' => '',
-                'trace' => [],
-                'level' => ''
-            ];
-            $i++;
+            $lines[$i++] = line($i, $line);
         }
     }
-
     return ['lines' => $lines, 'has_levels' => true, 'has_stamps' => true];
 }
 
-/** ===================
- *   END CONFIGURATION
- *  =================== */
+/** ===============================================================================================
+ *                                         END CONFIGURATION
+ *  =============================================================================================== */
 
 // redirect to hl.php/
 if (substr($_SERVER['REQUEST_URI'], -1) !== '/') {
@@ -252,12 +207,8 @@ if (substr($_SERVER['REQUEST_URI'], -1) !== '/') {
 
 /**
  * Get lines from given file, from $start to $end (inclusive)
- *
- * @param integer $start
- * @param integer $end
- * @return array [[line_no => line_text]]
  */
-function get_lines(string $file, int $start = null, int $end = null)
+function get_lines(string $file, int $start = null, int $end = null): array
 {
     global $default_num_lines;
 
@@ -278,17 +229,14 @@ function get_lines(string $file, int $start = null, int $end = null)
     $output = [];
     foreach ($lines as $line) {
         if ($line === '') continue;
-        [$line_no, $line] = explode("\n", $line, 2);
-        $output[$line_no] = trim($line);
+        [$num, $line] = explode("\n", $line, 2);
+        $output[$num] = trim($line);
     }
     return $output;
 }
 
 /**
- * Get the processor name for the file
- *
- * @param string $file
- * @return string
+ * Get the processor function for the given file name
  */
 function get_processor_func(string $file): string
 {
@@ -303,9 +251,24 @@ function get_processor_func(string $file): string
     return $default_log_mode;
 }
 
+/**
+ * Shortcut to generate a single line response
+ */
+function line(int $num, string $text, string $stamp = '', string $level = '', array $trace = []): array
+{
+    return [
+        'num' => $num,
+        'text' => $text,
+        'stamp' => $stamp,
+        'trace' => $trace,
+        'level' => strtolower($level),
+        'expanded' => false
+    ];
+}
+
 // die(json_encode(get_lines($argv[1], $argv[2], $argv[3]), JSON_PRETTY_PRINT));
 
-function dd($data, $pre = false)
+function dd($data, $pre = false): void
 {
     if ($pre) {
         die('<pre>' . json_encode($data, JSON_PRETTY_PRINT) . '</pre>');
@@ -321,7 +284,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
      */
     $request = json_decode(file_get_contents('php://input'));
 
-    function respond($data, $status = 200)
+    function respond($data, $status = 200): void
     {
         global $request;
         http_response_code($status);
@@ -368,7 +331,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="utf-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>Landing &middot; Hyperlog</title>
+    <title>Hyperlog</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://unpkg.com/hyperhtml@latest/min.js"></script>
 </head>
@@ -381,8 +344,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </ul>
     </header>
     <main>
-        <table class="table table-hover">
-            <tbody id="log">
+        <table id="log" class="table table-hover">
+            <tbody>
                 <tr>
                     <td class="mono">Loading...</td>
                 </tr>
@@ -438,7 +401,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 scrollTo(0, lastLine.offsetTop)
             }, 0);
         })
-    const logLines = () => Object.values(log.lines).map(line => parseInt(line.line_no))
+    const logLines = () => Object.values(log.lines).map(line => parseInt(line.num))
     const logStart = () => Math.min(...logLines())
     const logEnd = () => Math.min(...logLines())
     // update state and re-render if necessary
@@ -476,7 +439,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // render header tabs
     const renderTabs = () => {
         const { files } = state;
-        console.log('render tabs')
         bind($('#files'))`
             ${files.map(file => wire(file)`
                 <li class=${`tab-item ${active(file.name)}`}>
@@ -496,50 +458,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </li>
         `;
     };
+    // render a single line, plus trace lines if available
+    const renderLine = (line, traceLevel = null) => wire(line)`
+        <tr id=${`line-${line.num}`} class=${`line ${line.level} ${traceLevel ? 'trace' : ''}`}>
+            <td class="mono number">${line.num}</td>
+            ${log.has_stamps && wire(line)`
+                <td class="mono stamp">${line.stamp}</td>
+            ` || ''}
+            ${log.has_levels && wire(line)`
+                <td class="mono level">${line.level}</td>
+            ` || ''}
+            <td
+                class=${`mono line-text ${
+                    (line.trace.length > 0 ? 'has-trace' : '') +
+                    (line.expanded ? ' open' : '')
+                }`}
+                onclick=${() => {
+                    if (line.trace.length > 0) {
+                        line.expanded = !line.expanded
+                        renderLog()
+                    }
+                }}
+            >${line.text}</td>
+        </tr>
+        ${line.expanded && line.trace.map(l => renderLine(l, traceLevel + 1)) || ''}
+    `;
     // render log lines
     const renderLog = () => {
-        const { lines, has_levels } = log;
-        bind($('#log'))`
-            ${Object.values(lines).map(line => wire(line)`
-                <tr id=${`line-${line.line_no}`} class=${`line ${line.level}`}>
-                    <td class="mono number">${line.line_no}</td>
-                    ${has_levels && wire(line)`
-                        <td class="mono level">${line.level}</td>
-                    ` || ''}
-                    <td
-                        class=${`mono line-text ${
-                            (line.trace.length > 0 ? 'has-trace' : '') +
-                            (line.expanded ? ' open' : '')
-                        }`}
-                        onclick=${() => {
-                            if (line.trace.length > 0) {
-                                line.expanded = !line.expanded
-                                renderLog()
-                            }
-                        }}
-                    >${line.text}</td>
-                </tr>
-                ${line.expanded && line.trace.map(line => wire(line)`
-                    <tr id=${`line-${line.line_no}`} class="line trace">
-                        <td class="mono number">${line.line_no}</td>
-                        ${has_levels && wire(line)`
-                            <td class="mono level"></td>
-                        ` || ''}
-                        <td class="mono line-text">${line.text}</td>
-                    </tr>
-                `) || ''}
-            `)}
-        `
-    };
-    // request listing from api
+        bind($('#log'))`<tbody>
+            ${Object.values(log.lines).map(l => renderLine(l))}
+        </tbody>`
+    }
+
     (() => {
-        const hashParts = location.hash.split('/');
-        if (hashParts.length > 1) {
-            state.file = hashParts[1];
+        // interpret hash and initialize state
+        const hash = location.hash.split('/');
+        if (hash.length > 1) {
+            state.file = hash[1];
             document.title = `${state.file} • Hyperlog`;
             fetchLog();
         }
     })();
+    // request listing from api
     fetchFilenames();
     setInterval(fetchFilenames, pollFilesRate);
 })();
@@ -598,6 +558,12 @@ main {
 .table {
     width: 100%;
 }
+.line {
+    /* animation: fade-in 1s; */
+}
+.line.trace {
+    background: #262e3a;
+}
 .line:hover {
     background: #354053;
     color: #e1e7ec;
@@ -653,6 +619,10 @@ main {
     font-size: 14px;
 }
 .line-no {
+}
+@keyframes fade-in {
+    0% { opacity: 0; }
+    100% { opacity: 1; }
 }
 </style>
 </html>
